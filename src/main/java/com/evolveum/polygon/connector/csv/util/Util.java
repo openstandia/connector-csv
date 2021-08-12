@@ -1,19 +1,15 @@
 package com.evolveum.polygon.connector.csv.util;
 
 import com.evolveum.polygon.connector.csv.CsvConfiguration;
-import com.evolveum.polygon.connector.csv.CsvConnector;
+import com.evolveum.polygon.connector.csv.LiveSyncOnlyCsvConnector;
 import com.evolveum.polygon.connector.csv.ObjectClassHandlerConfiguration;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.QuoteMode;
-import org.identityconnectors.common.Base64;
 import org.identityconnectors.common.StringUtil;
 import org.identityconnectors.common.logging.Log;
-import org.identityconnectors.common.security.GuardedByteArray;
-import org.identityconnectors.common.security.GuardedString;
 import org.identityconnectors.framework.common.exceptions.ConfigurationException;
 import org.identityconnectors.framework.common.exceptions.ConnectorException;
 import org.identityconnectors.framework.common.exceptions.ConnectorIOException;
-import org.identityconnectors.framework.common.objects.Attribute;
 
 import java.io.*;
 import java.nio.channels.FileChannel;
@@ -159,10 +155,6 @@ public class Util {
         return defValue;
     }
 
-    public static BufferedReader createReader(ObjectClassHandlerConfiguration configuration) throws IOException {
-        return createReader(configuration.getFilePath(), configuration);
-    }
-
     public static BufferedReader createReader(File path, ObjectClassHandlerConfiguration configuration) throws IOException {
         FileInputStream fis = new FileInputStream(path);
         InputStreamReader in = new InputStreamReader(fis, configuration.getEncoding());
@@ -174,7 +166,7 @@ public class Util {
             throw new ConfigurationException("File path is not defined");
         }
         
-        synchronized (CsvConnector.SYNCH_FILE_LOCK) {
+        synchronized (LiveSyncOnlyCsvConnector.SYNCH_FILE_LOCK) {
         	if (!file.exists()) {
         		throw new ConfigurationException("File '" + file + "' doesn't exists. At least file with CSV header must exist");
         	}
@@ -262,147 +254,6 @@ public class Util {
                 .withTrim(configuration.isTrim());
     }
 
-    public static String createRawValue(Attribute attribute, ObjectClassHandlerConfiguration configuration) {
-        if (attribute == null) {
-            return null;
-        }
-
-        return createRawValue(attribute.getValue(), configuration);
-    }
-
-    public static String createRawValue(List<Object> values, ObjectClassHandlerConfiguration configuration) {
-        if (values == null || values.isEmpty()) {
-            return null;
-        }
-
-        if (values.size() > 1 && StringUtil.isEmpty(configuration.getMultivalueDelimiter())) {
-            throw new ConnectorException("Multivalue delimiter not defined in connector configuration");
-        }
-
-        StringBuilder sb = new StringBuilder();
-
-        for (int i = 0; i < values.size(); i++) {
-            Object obj = values.get(i);
-            if (obj instanceof GuardedString) {
-                GuardedString gs = (GuardedString) obj;
-                StringAccessor sa = new StringAccessor();
-                gs.access(sa);
-
-                sb.append(sa.getValue());
-            } else if (obj instanceof GuardedByteArray) {
-                GuardedByteArray ga = (GuardedByteArray) obj;
-                ByteArrayAccessor ba = new ByteArrayAccessor();
-                ga.access(ba);
-
-                String value = org.identityconnectors.common.Base64.encode(ba.getValue());
-                sb.append(value);
-            } else {
-                sb.append(obj);
-            }
-
-            if (i + 1 < values.size()) {
-                sb.append(configuration.getMultivalueDelimiter());
-            }
-        }
-
-        return sb.toString();
-    }
-
-    public static <T extends Object> List<T> createAttributeValues(String raw, Class<T> type,
-                                                                   ObjectClassHandlerConfiguration configuration) {
-        if (StringUtil.isEmpty(raw)) {
-            return new ArrayList<>();
-        }
-
-        List<T> result = new ArrayList<>();
-
-        if (StringUtil.isEmpty(configuration.getMultivalueDelimiter())) {
-            Object value = createValue(raw, type);
-            if (value != null) {
-                result.add((T) value);
-            }
-        } else {
-            String[] array = raw.split(configuration.getMultivalueDelimiter());
-            for (String item : array) {
-                if (StringUtil.isEmpty(item)) {
-                    continue;
-                }
-
-                T value = (T) createValue(item, type);
-                if (value != null) {
-                    result.add(value);
-                }
-            }
-        }
-
-        return result;
-    }
-
-    private static <T extends Object> Object createValue(String raw, Class<T> type) {
-        if (StringUtil.isEmpty(raw)) {
-            return null;
-        }
-
-        if (GuardedString.class.equals(type)) {
-            return new GuardedString(raw.toCharArray());
-        } else if (GuardedByteArray.class.equals(type)) {
-            byte[] bytes = Base64.decode(raw);
-            return new GuardedByteArray(bytes);
-        }
-
-        return raw;
-    }
-
-    public static List<Object> addValues(List<Object> base, List<Object> toAdd) {
-        List<Object> result = new ArrayList<>();
-        if (base != null) {
-            result.addAll(base);
-        }
-
-        for (Object add : toAdd) {
-            if (add == null || result.contains(add)) {
-                continue;
-            }
-
-            result.add(add);
-        }
-
-        return result;
-    }
-
-    public static List<Object> removeValues(List<Object> base, List<Object> toRemove) {
-        List<Object> result = new ArrayList<>();
-        if (base != null) {
-            result.addAll(base);
-        }
-
-        for (Object remove : toRemove) {
-            if (remove == null) {
-                continue;
-            }
-
-            if (result.contains(remove)) {
-                result.remove(remove);
-            }
-        }
-
-        return result;
-    }
-
-    public static String printDate(long millis) {
-        return DATE_FORMAT.format(new Date(millis));
-    }
-
-    public static void cleanupResources(Writer writer, Reader reader, FileLock lock,
-                                        ObjectClassHandlerConfiguration config) {
-        Util.closeQuietly(writer);
-        Util.closeQuietly(reader);
-        Util.closeQuietly(lock);
-
-        File tmp = Util.createTmpPath(config);
-        tmp.delete();
-    }
-
     public static String[] listTokenFiles(ObjectClassHandlerConfiguration config) {
         File csv = config.getFilePath();
 
@@ -439,22 +290,5 @@ public class Util {
         }
 
         return null;
-    }
-
-    public static <E> List<E> copyOf(Iterator<? extends E> elements) {
-        if (elements == null) {
-            return null;
-        }
-
-        if (!elements.hasNext()) {
-            return Collections.emptyList();
-        }
-
-        List<E> list = new ArrayList<>();
-        while (elements.hasNext()) {
-            list.add(elements.next());
-        }
-
-        return Collections.unmodifiableList(list);
     }
 }

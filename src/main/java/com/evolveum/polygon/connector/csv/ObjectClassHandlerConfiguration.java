@@ -39,6 +39,7 @@ public class ObjectClassHandlerConfiguration {
     private String uniqueAttribute;
     private String nameAttribute;
     private String passwordAttribute;
+    private String eventTypeAttribute;
 
     private String multivalueDelimiter;
 
@@ -80,6 +81,7 @@ public class ObjectClassHandlerConfiguration {
         setUniqueAttribute(Util.getSafeValue(values, "uniqueAttribute", null));
         setNameAttribute(Util.getSafeValue(values, "nameAttribute", null));
         setPasswordAttribute(Util.getSafeValue(values, "passwordAttribute", null));
+        setEventTypeAttribute(Util.getSafeValue(values, "eventTypeAttribute", null));
         setMultivalueAttributes(Util.getSafeValue(values, "multivalueAttributes", null));
 
         setMultivalueDelimiter(Util.getSafeValue(values, "multivalueDelimiter", null));
@@ -284,6 +286,14 @@ public class ObjectClassHandlerConfiguration {
         this.passwordAttribute = passwordAttribute;
     }
 
+    public String getEventTypeAttribute() {
+        return eventTypeAttribute;
+    }
+
+    public void setEventTypeAttribute(String eventTypeAttribute) {
+        this.eventTypeAttribute = eventTypeAttribute;
+    }
+
     public String getMultivalueDelimiter() {
         return multivalueDelimiter;
     }
@@ -352,7 +362,7 @@ public class ObjectClassHandlerConfiguration {
     private void validateCsvFile() {
     	Util.checkCanReadFile(filePath);
 
-    	synchronized (CsvConnector.SYNCH_FILE_LOCK) {
+        synchronized (LiveSyncOnlyCsvConnector.SYNCH_FILE_LOCK) {
     		if (!readOnly && !filePath.canWrite()) {
     			throw new ConfigurationException("Can't write to file '" + filePath.getAbsolutePath() + "'");
     		}

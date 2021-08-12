@@ -7,7 +7,6 @@ import org.identityconnectors.framework.api.ConnectorFacadeFactory;
 import org.identityconnectors.framework.common.objects.Attribute;
 import org.identityconnectors.framework.common.objects.AttributeBuilder;
 import org.identityconnectors.framework.common.objects.ConnectorObject;
-import org.identityconnectors.framework.common.objects.Uid;
 import org.identityconnectors.test.common.TestHelpers;
 
 import java.io.File;
@@ -72,7 +71,7 @@ public abstract class BaseTest {
     protected ConnectorFacade createNewInstance(CsvConfiguration config) {
     	ConnectorFacadeFactory factory = ConnectorFacadeFactory.getInstance();
 
-        APIConfiguration impl = TestHelpers.createTestConfiguration(CsvConnector.class, config);
+        APIConfiguration impl = TestHelpers.createTestConfiguration(LiveSyncOnlyCsvConnector.class, config);
         return factory.newInstance(impl);
     }
     

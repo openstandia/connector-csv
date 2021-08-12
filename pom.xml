@@ -27,17 +27,17 @@
     </parent>
 
     <groupId>com.evolveum.polygon</groupId>
-    <artifactId>connector-csv</artifactId>
+    <artifactId>connector-liveSync-only-csv</artifactId>
     <version>2.5-SNAPSHOT</version>
     <packaging>jar</packaging>
 
-    <name>CSV Connector</name>
+    <name>LiveSync-only CSV Connector</name>
 
     <properties>
         <project.source.version>1.8</project.source.version>
 
         <connectorPackage>com.evolveum.polygon.connector.csv</connectorPackage>
-        <connectorClass>CsvConnector</connectorClass>
+        <connectorClass>LiveSyncOnlyCsvConnector</connectorClass>
 
         <commons.csv.version>1.4</commons.csv.version>
     </properties>
@@ -82,5 +82,38 @@
             <artifactId>commons-csv</artifactId>
             <version>${commons.csv.version}</version>
         </dependency>
+        <dependency>
+            <groupId>commons-codec</groupId>
+            <artifactId>commons-codec</artifactId>
+            <version>1.9</version>
+        </dependency>
     </dependencies>
+
+    <profiles>
+        <profile>
+            <id>midpoint</id>
+            <dependencies>
+                <dependency>
+                    <groupId>com.evolveum.midpoint.gui</groupId>
+                    <artifactId>admin-gui</artifactId>
+                    <version>4.3.1</version>
+                    <type>jar</type>
+                    <classifier>classes</classifier>
+                    <scope>provided</scope>
+                </dependency>
+                <dependency>
+                    <groupId>org.testng</groupId>
+                    <artifactId>testng</artifactId>
+                    <version>6.8</version>
+                    <scope>test</scope>
+                    <exclusions>
+                        <exclusion>
+                            <groupId>org.yaml</groupId>
+                            <artifactId>snakeyaml</artifactId>
+                        </exclusion>
+                    </exclusions>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 </project>
