@@ -1,23 +1,20 @@
 package com.evolveum.polygon.connector.csv;
 
 import com.evolveum.polygon.connector.csv.util.Column;
-import com.evolveum.polygon.connector.csv.util.StringAccessor;
 import com.evolveum.polygon.connector.csv.util.Util;
+import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
-import org.apache.commons.csv.CSVPrinter;
 import org.apache.commons.csv.CSVRecord;
 import org.identityconnectors.common.StringUtil;
 import org.identityconnectors.common.logging.Log;
 import org.identityconnectors.common.security.GuardedString;
 import org.identityconnectors.framework.common.exceptions.*;
 import org.identityconnectors.framework.common.objects.*;
-import org.identityconnectors.framework.common.objects.filter.FilterTranslator;
 import org.identityconnectors.framework.spi.SyncTokenResultsHandler;
 import org.identityconnectors.framework.spi.operations.*;
 
 import java.io.*;
-import java.nio.channels.Channels;
 import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
@@ -31,13 +28,7 @@ import static com.evolveum.polygon.connector.csv.util.Util.handleGenericExceptio
  * <p>
  * Created by lazyman on 27/01/2017.
  */
-public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<String>,
-		UpdateAttributeValuesOp, AuthenticateOp, ResolveUsernameOp, SyncOp {
-
-	private enum Operation {
-
-		DELETE, UPDATE, ADD_ATTR_VALUE, REMOVE_ATTR_VALUE;
-	}
+public class ObjectClassHandler implements TestOp, SyncOp {
 
 	private static final Log LOG = Log.getLog(ObjectClassHandler.class);
 
@@ -52,7 +43,7 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 	}
 
 	private Map<String, Column> initHeader(File csvFile) {
-		synchronized (CsvConnector.SYNCH_FILE_LOCK) {
+		synchronized (LiveSyncOnlyCsvConnector.SYNCH_FILE_LOCK) {
 			CSVFormat csv = Util.createCsvFormat(configuration);
 			try (Reader reader = Util.createReader(csvFile, configuration)) {
 				CSVParser parser = csv.parse(reader);
@@ -170,13 +161,6 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 		}
 	}
 
-	private Set<AttributeInfo.Flags> createFlags(AttributeInfo.Flags... flags) {
-		Set<AttributeInfo.Flags> set = new HashSet<>();
-		set.addAll(Arrays.asList(flags));
-
-		return set;
-	}
-
 	private List<AttributeInfo> createAttributeInfo(Map<String, Column> columns) {
 		List<String> multivalueAttributes = new ArrayList<>();
 		if (StringUtil.isNotEmpty(configuration.getMultivalueAttributes())) {
@@ -251,159 +235,6 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 		return infos;
 	}
 
-	@Override
-	public Uid authenticate(ObjectClass oc, String username, GuardedString password, OperationOptions oo) {
-		return resolveUsername(username, password, oo, true);
-	}
-
-	@Override
-	public Uid create(ObjectClass oc, Set<Attribute> set, OperationOptions oo) {
-		if (configuration.isReadOnly()) {
-			throw new ConnectorException("Can't add attribute values. Readonly set to true.");
-		}
-
-		Set<Attribute> attributes = normalize(set);
-
-		String uidValue = findUidValue(attributes);
-		Uid uid = new Uid(uidValue);
-
-		FileLock lock = Util.obtainTmpFileLock(configuration);
-		Reader reader = null;
-		Writer writer = null;
-		try {
-			synchronized (CsvConnector.SYNCH_FILE_LOCK) {
-				reader = Util.createReader(configuration);
-				writer = new BufferedWriter(Channels.newWriter(lock.channel(), configuration.getEncoding()));
-
-				CSVFormat csv = Util.createCsvFormat(configuration);
-				CSVParser parser = csv.parse(reader);
-
-				csv = Util.createCsvFormat(configuration);
-				CSVPrinter printer = csv.print(writer);
-
-				Iterator<CSVRecord> iterator = parser.iterator();
-				// we don't want to skip header in any case, but if it's there just
-				// write it to tmp file as "standard" record. We can't handle first row
-				// as header in case there are more columns with the same name.
-				if (configuration.isHeaderExists() && iterator.hasNext()) {
-					CSVRecord record = iterator.next();
-					printer.printRecord(record);
-				}
-
-				// handling real records
-				while (iterator.hasNext()) {
-					CSVRecord record = iterator.next();
-					ConnectorObject obj = createConnectorObject(record);
-
-					if (uid.equals(obj.getUid())) {
-						throw new AlreadyExistsException("Account already exists '" + uid.getUidValue() + "'.");
-					}
-
-					printer.printRecord(record);
-				}
-
-				printer.printRecord(createNewRecord(attributes));
-
-				writer.close();
-				reader.close();
-
-				moveTmpToOrig();
-			}
-		} catch (Exception ex) {
-			handleGenericException(ex, "Error during account '" + uid + "' create");
-		} finally {
-			Util.cleanupResources(writer, reader, lock, configuration);
-		}
-		
-		return uid;
-	}
-
-	private void moveTmpToOrig() throws IOException {
-		// moving existing file
-		String path = configuration.getFilePath().getPath();
-		File orig = new File(path);
-
-		File tmp = Util.createTmpPath(configuration);
-
-		Files.move(tmp.toPath(), orig.toPath(), StandardCopyOption.REPLACE_EXISTING);
-	}
-
-	private boolean isPassword(String column) {
-		return StringUtil.isNotEmpty(configuration.getPasswordAttribute())
-				&& configuration.getPasswordAttribute().equals(column);
-	}
-
-	private boolean isUid(String column) {
-		return configuration.getUniqueAttribute().equals(column);
-	}
-
-	private List<Object> createNewRecord(Set<Attribute> attributes) {
-		final Object[] record = new Object[header.size()];
-
-		Attribute nameAttr = AttributeUtil.getNameFromAttributes(attributes);
-		Object name = nameAttr != null ? AttributeUtil.getSingleValue(nameAttr) : null;
-
-		Attribute uniqueAttr = AttributeUtil.find(configuration.getUniqueAttribute(), attributes);
-		Object uid = uniqueAttr != null ? AttributeUtil.getSingleValue(uniqueAttr) : null;
-
-		for (String column : header.keySet()) {
-			Object value;
-			if (isPassword(column)) {
-				Attribute attr = AttributeUtil.find(OperationalAttributes.PASSWORD_NAME, attributes);
-				if (attr == null) {
-					continue;
-				}
-
-				value = Util.createRawValue(attr, configuration);
-			} else if (isName(column)) {
-				value = name;
-			} else if (isUid(column)) {
-				value = uid;
-			} else {
-				Attribute attr = AttributeUtil.find(column, attributes);
-				if (attr == null) {
-					continue;
-				}
-
-				value = Util.createRawValue(attr, configuration);
-			}
-
-			record[header.get(column).getIndex()] = value;
-		}
-
-		return Arrays.asList(record);
-	}
-
-	private String findUidValue(Set<Attribute> attributes) {
-		Attribute uniqueAttr = AttributeUtil.find(configuration.getUniqueAttribute(), attributes);
-		Object uid = uniqueAttr != null ? AttributeUtil.getSingleValue(uniqueAttr) : null;
-
-		if (uid == null) {
-			throw new InvalidAttributeValueException("Unique attribute value not defined");
-		}
-
-		return uid.toString();
-	}
-
-	@Override
-	public void delete(ObjectClass oc, Uid uid, OperationOptions oo) {
-		if (configuration.isReadOnly()) {
-			throw new ConnectorException("Can't add attribute values. Readonly set to true.");
-		}
-
-		update(Operation.DELETE, oc, uid, null, oo);
-	}
-
-	@Override
-	public Uid resolveUsername(ObjectClass oc, String username, OperationOptions oo) {
-		return resolveUsername(username, null, oo, false);
-	}
-
-	@Override
-	public FilterTranslator<String> createFilterTranslator(ObjectClass oc, OperationOptions oo) {
-		return new CsvFilterTranslator();
-	}
-
 	private boolean skipRecord(CSVRecord record) {
 		if (configuration.isHeaderExists() && record.getRecordNumber() == 1) {
 			return true;
@@ -414,125 +245,6 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 		}
 
 		return false;
-	}
-
-	@Override
-	public void executeQuery(ObjectClass oc, String uid, ResultsHandler handler, OperationOptions oo) {
-		CSVFormat csv = Util.createCsvFormatReader(configuration);
-		try (Reader reader = Util.createReader(configuration)) {
-
-			CSVParser parser = csv.parse(reader);
-			Iterator<CSVRecord> iterator = parser.iterator();
-			while (iterator.hasNext()) {
-				CSVRecord record = iterator.next();
-				if (skipRecord(record)) {
-					continue;
-				}
-
-				ConnectorObject obj = createConnectorObject(record);
-
-				if (uid == null) {
-					if (!handler.handle(obj)) {
-						break;
-					} else {
-						continue;
-					}
-				}
-
-				if (!uidMatches(uid, obj.getUid().getUidValue(), configuration.isIgnoreIdentifierCase())) {
-					continue;
-				}
-
-				if (!handler.handle(obj)) {
-					break;
-				}
-			}
-		} catch (Exception ex) {
-			handleGenericException(ex, "Error during query execution");
-		}
-	}
-
-	private boolean uidMatches(String uid1, String uid2, boolean ignoreCase) {
-		return uid1.equals(uid2) || ignoreCase && uid1.equalsIgnoreCase(uid2);
-	}
-
-	private void validateAuthenticationInputs(String username, GuardedString password, boolean authenticate) {
-		if (StringUtil.isEmpty(username)) {
-			throw new InvalidCredentialException("Username must not be empty");
-		}
-
-		if (authenticate && StringUtil.isEmpty(configuration.getPasswordAttribute())) {
-			throw new ConfigurationException("Password attribute not defined in configuration");
-		}
-
-		if (authenticate && password == null) {
-			throw new InvalidPasswordException("Password is not defined");
-		}
-	}
-
-	private Uid resolveUsername(String username, GuardedString password, OperationOptions oo, boolean authenticate) {
-		validateAuthenticationInputs(username, password, authenticate);
-
-		CSVFormat csv = Util.createCsvFormatReader(configuration);
-		try (Reader reader = Util.createReader(configuration)) {
-
-			ConnectorObject object = null;
-
-			CSVParser parser = csv.parse(reader);
-			Iterator<CSVRecord> iterator = parser.iterator();
-			while (iterator.hasNext()) {
-				CSVRecord record = iterator.next();
-				if (skipRecord(record)) {
-					continue;
-				}
-
-				ConnectorObject obj = createConnectorObject(record);
-
-				Name name = obj.getName();
-				if (name != null && username.equals(AttributeUtil.getStringValue(name))) {
-					object = obj;
-					break;
-				}
-			}
-
-			if (object == null) {
-				String message = authenticate ? "Invalid username and/or password" : "Invalid username";
-				throw new InvalidCredentialException(message);
-			}
-
-			if (authenticate) {
-				authenticate(username, password, object);
-			}
-
-			Uid uid = object.getUid();
-			if (uid == null) {
-				throw new UnknownUidException("Unique attribute doesn't have value for account '" + username + "'");
-			}
-
-			return uid;
-		} catch (Exception ex) {
-			handleGenericException(ex, "Error during authentication");
-		}
-
-		return null;
-	}
-
-	private void authenticate(String username, GuardedString password, ConnectorObject foundObject) {
-		GuardedString objPassword = AttributeUtil.getPasswordValue(foundObject.getAttributes());
-		if (objPassword == null) {
-			throw new InvalidPasswordException("Password not defined for username '" + username + "'");
-		}
-
-		// we don't want to authenticate against empty password
-		StringAccessor acc = new StringAccessor();
-		objPassword.access(acc);
-		if (StringUtil.isEmpty(acc.getValue())) {
-			throw new InvalidPasswordException("Password not defined for username '" + username + "'");
-		}
-
-		if (!objPassword.equals(password)) {
-			throw new InvalidPasswordException("Invalid username and/or password");
-		}
 	}
 
 	private void handleJustNewToken(SyncToken token, SyncResultsHandler handler) {
@@ -586,6 +298,18 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 		return oldCsv;
 	}
 
+	private String calcDigest(File file) {
+		try {
+			String digest = DigestUtils.sha256Hex(new FileInputStream(file));
+			if (StringUtil.isEmpty(digest)) {
+				throw new ConnectorIOException("The sync file is empty: " + file.getPath());
+			}
+			return digest;
+		} catch (IOException e) {
+			throw new ConnectorIOException("Can't read oldCsv", e);
+		}
+	}
+
 	private void doSync(long token, SyncResultsHandler handler) {
 		String newToken = createNewSyncFile();
 		SyncToken newSyncToken = new SyncToken(newToken);
@@ -600,14 +324,18 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 			return;
 		}
 
-		LOG.ok("Comparing files. Old {0} (exists: {1}, size: {2}) with new {3} (exists: {4}, size: {5})",
-				oldCsv.getName(), oldCsv.exists(), oldCsv.length(), newCsv.getName(), newCsv.exists(), newCsv.length());
+		String oldDigest = calcDigest(oldCsv);
+		String newDigest = calcDigest(newCsv);
+
+		LOG.ok("Comparing files. Old {0} (exists: {1}, size: {2}, digest: {3}) with new {4} (exists: {5}, size: {6}, digest: {7})",
+				oldCsv.getName(), oldCsv.exists(), oldCsv.length(), oldDigest, newCsv.getName(), newCsv.exists(), newCsv.length(), newDigest);
+
+		if (oldDigest.equals(newDigest)) {
+			// no changes
+			return;
+		}
 
 		try (Reader reader = Util.createReader(newCsv, configuration)) {
-			Map<String, CSVRecord> oldData = loadOldSyncFile(oldCsv);
-
-			Set<String> oldUsedOids = new HashSet<>();
-
 			CSVFormat csv = Util.createCsvFormatReader(configuration);
 
 			CSVParser parser = csv.parse(reader);
@@ -628,7 +356,7 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 							+ record.getRecordNumber() + " in " + newCsv.getName());
 				}
 
-				SyncDelta delta = doSyncCreateOrUpdate(record, uid, oldData, oldUsedOids, newSyncToken, handler);
+				SyncDelta delta = doSyncCreateOrUpdate(record, uid, newSyncToken, handler);
 				if (delta == null) {
 					continue;
 				}
@@ -640,10 +368,6 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 				}
 			}
 
-			if (shouldContinue) {
-				changesCount += doSyncDeleted(oldData, oldUsedOids, newSyncToken, handler);
-			}
-
 			if (changesCount == 0) {
 				handleJustNewToken(new SyncToken(newToken), handler);
 			}
@@ -652,46 +376,6 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 		} finally {
 			cleanupOldSyncFiles();
 		}
-	}
-
-	private Map<String, CSVRecord> loadOldSyncFile(File oldCsv) {
-		Map<String, Column> header = initHeader(oldCsv);
-		if (!this.header.equals(header)) {
-			throw new ConnectorException("Headers of sync file '" + oldCsv + "' and current csv don't match");
-		}
-
-		Integer uidIndex = header.get(configuration.getUniqueAttribute()).getIndex();
-
-		Map<String, CSVRecord> oldData = new HashMap<>();
-
-		CSVFormat csv = Util.createCsvFormatReader(configuration);
-		try (Reader reader = Util.createReader(oldCsv, configuration)) {
-			CSVParser parser = csv.parse(reader);
-			Iterator<CSVRecord> iterator = parser.iterator();
-			while (iterator.hasNext()) {
-				CSVRecord record = iterator.next();
-				if (skipRecord(record)) {
-					continue;
-				}
-
-				String uid = record.get(uidIndex);
-				if (StringUtil.isEmpty(uid)) {
-					throw new ConnectorException("Unique attribute not defined for record number "
-							+ record.getRecordNumber() + " in " + oldCsv.getName());
-				}
-
-				if (oldData.containsKey(uid)) {
-					throw new ConnectorException("Unique attribute value '" + uid + "' is not unique in "
-							+ oldCsv.getName());
-				}
-
-				oldData.put(uid, record);
-			}
-		} catch (Exception ex) {
-			handleGenericException(ex, "Error during query execution");
-		}
-
-		return oldData;
 	}
 
 	private void cleanupOldSyncFiles() {
@@ -716,56 +400,22 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 		}
 	}
 
-	private SyncDelta doSyncCreateOrUpdate(CSVRecord newRecord, String newRecordUid, Map<String, CSVRecord> oldData,
-										   Set<String> oldUsedOids, SyncToken newSyncToken, SyncResultsHandler handler) {
+	private SyncDelta doSyncCreateOrUpdate(CSVRecord newRecord, String newRecordUid, SyncToken newSyncToken, SyncResultsHandler handler) {
 		SyncDelta delta;
 
-		CSVRecord oldRecord = oldData.get(newRecordUid);
-		if (oldRecord == null) {
-			// newRecord is new account
-			delta = buildSyncDelta(SyncDeltaType.CREATE, newSyncToken, newRecord);
-		} else {
-			oldUsedOids.add(newRecordUid);
+		// TODO Implement eventType handling here?
+//		String eventType = newRecord.get(configuration.getEventTypeAttribute());
+//		if (eventType == null) {
+//			// Invalid record, skip
+//			return null;
+//		}
 
-			// this will be an update if records aren't equal
-			List old = Util.copyOf(oldRecord.iterator());
-			List _new = Util.copyOf(newRecord.iterator());
-			if (old.equals(_new)) {
-				// record are equal, no update
-				return null;
-			}
-
-			delta = buildSyncDelta(SyncDeltaType.UPDATE, newSyncToken, newRecord);
-		}
+		// TODO Need to distinguish create or update?
+		delta = buildSyncDelta(SyncDeltaType.CREATE_OR_UPDATE, newSyncToken, newRecord);
 
 		LOG.ok("Created delta {0}", delta);
 
 		return delta;
-	}
-
-	private int doSyncDeleted(Map<String, CSVRecord> oldData, Set<String> oldUsedOids, SyncToken newSyncToken,
-							  SyncResultsHandler handler) {
-
-		int changesCount = 0;
-
-		for (String oldUid : oldData.keySet()) {
-			if (oldUsedOids.contains(oldUid)) {
-				continue;
-			}
-
-			// deleted record
-			CSVRecord deleted = oldData.get(oldUid);
-			SyncDelta delta = buildSyncDelta(SyncDeltaType.DELETE, newSyncToken, deleted);
-
-			LOG.ok("Created delta {0}", delta);
-			changesCount++;
-
-			if (!handler.handle(delta)) {
-				break;
-			}
-		}
-
-		return changesCount;
 	}
 
 	private SyncDelta buildSyncDelta(SyncDeltaType type, SyncToken token, CSVRecord record) {
@@ -827,33 +477,6 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 		configuration.validate();
 
 		initHeader(configuration.getFilePath());
-	}
-
-	@Override
-	public Uid addAttributeValues(ObjectClass oc, Uid uid, Set<Attribute> set, OperationOptions oo) {
-		if (configuration.isReadOnly()) {
-			throw new ConnectorException("Can't add attribute values. Readonly set to true.");
-		}
-
-		return update(Operation.ADD_ATTR_VALUE, oc, uid, set, oo);
-	}
-
-	@Override
-	public Uid removeAttributeValues(ObjectClass oc, Uid uid, Set<Attribute> set, OperationOptions oo) {
-		if (configuration.isReadOnly()) {
-			throw new ConnectorException("Can't add attribute values. Readonly set to true.");
-		}
-
-		return update(Operation.REMOVE_ATTR_VALUE, oc, uid, set, oo);
-	}
-
-	@Override
-	public Uid update(ObjectClass oc, Uid uid, Set<Attribute> set, OperationOptions oo) {
-		if (configuration.isReadOnly()) {
-			throw new ConnectorException("Can't add attribute values. Readonly set to true.");
-		}
-
-		return update(Operation.UPDATE, oc, uid, set, oo);
 	}
 
 	private boolean isRecordEmpty(CSVRecord record) {
@@ -950,202 +573,7 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 		return values;
 	}
 
-	private Uid update(Operation operation, ObjectClass objectClass, Uid uid, Set<Attribute> attributes,
-					   OperationOptions oo) {
-
-		Util.notNull(uid, "Uid must not be null");
-
-		if ((Operation.ADD_ATTR_VALUE.equals(operation) || Operation.REMOVE_ATTR_VALUE.equals(operation))
-				&& attributes.isEmpty()) {
-			return uid;
-		}
-
-		Map<Integer, String> header = reverseHeaderMap();
-
-		attributes = normalize(attributes);
-
-		FileLock lock = Util.obtainTmpFileLock(configuration);
-		Reader reader = null;
-		Writer writer = null;
-		try {
-			synchronized (CsvConnector.SYNCH_FILE_LOCK) {
-				reader = Util.createReader(configuration);
-				writer = new BufferedWriter(Channels.newWriter(lock.channel(), configuration.getEncoding()));
-
-				boolean found = false;
-
-				CSVFormat csv = Util.createCsvFormat(configuration);
-				CSVParser parser = csv.parse(reader);
-
-				csv = Util.createCsvFormat(configuration);
-				CSVPrinter printer = csv.print(writer);
-
-				Iterator<CSVRecord> iterator = parser.iterator();
-				while (iterator.hasNext()) {
-					CSVRecord record = iterator.next();
-
-					Map<String, String> data = new HashMap<>();
-					for (int i = 0; i < record.size(); i++) {
-						data.put(header.get(i), record.get(i));
-					}
-
-					String recordUidValue = data.get(configuration.getUniqueAttribute());
-					if (StringUtil.isEmpty(recordUidValue)) {
-						continue;
-					}
-				
-					if (!uidMatches(uid.getUidValue(), recordUidValue, configuration.isIgnoreIdentifierCase())) {
-						printer.printRecord(record);
-						continue;
-					}
-
-					found = true;
-
-					if (!Operation.DELETE.equals(operation)) {
-						List<Object> updated = updateObject(operation, data, attributes);
-
-						int uidIndex = this.header.get(configuration.getUniqueAttribute()).getIndex();
-						Object newUidValue = updated.get(uidIndex);
-						uid = new Uid(newUidValue.toString());
-					
-						printer.printRecord(updated);
-					}
-				}
-
-				writer.close();
-				reader.close();
-
-				if (!found) {
-					throw new UnknownUidException("Account '" + uid + "' not found");
-				}
-
-				moveTmpToOrig();
-			}
-		} catch (Exception ex) {
-			handleGenericException(ex, "Error during account '" + uid + "' " + operation.name());
-		} finally {
-			Util.cleanupResources(writer, reader, lock, configuration);
-		}
-		return uid;
-	}
-
-	private Set<Attribute> normalize(Set<Attribute> attributes) {
-		if (attributes == null) {
-			return null;
-		}
-
-		Set<Attribute> result = new HashSet<>();
-		result.addAll(attributes);
-
-		Attribute nameAttr = AttributeUtil.getNameFromAttributes(result);
-		Object name = nameAttr != null ? AttributeUtil.getSingleValue(nameAttr) : null;
-
-		Attribute uniqueAttr = AttributeUtil.find(configuration.getUniqueAttribute(), result);
-		Object uid = uniqueAttr != null ? AttributeUtil.getSingleValue(uniqueAttr) : null;
-
-		if (isUniqueAndNameAttributeEqual()) {
-			if (name == null && uid != null) {
-				if (nameAttr == null) {
-					nameAttr = AttributeBuilder.build(Name.NAME, uid);
-					result.add(nameAttr);
-				}
-			} else if (uid == null && name != null) {
-				if (uniqueAttr == null) {
-					uniqueAttr = AttributeBuilder.build(configuration.getUniqueAttribute(), name);
-					result.add(uniqueAttr);
-				}
-			} else if (uid != null && name != null) {
-				if (!name.equals(uid)) {
-					throw new InvalidAttributeValueException("Unique attribute value doesn't match name attribute value");
-				}
-			}
-		}
-
-		Set<String> columns = header.keySet();
-		for (Attribute attribute : result) {
-			String attrName = attribute.getName();
-			if (Uid.NAME.equals(attrName) || Name.NAME.equals(attrName)
-					|| OperationalAttributes.PASSWORD_NAME.equals(attrName)) {
-				continue;
-			}
-
-			if (!columns.contains(attrName)) {
-				throw new ConnectorException("Unknown attribute " + attrName);
-			}
-
-			if (!isUniqueAndNameAttributeEqual() && isName(attrName)) {
-				throw new ConnectorException("Column used as " + Name.NAME + " attribute");
-			}
-		}
-
-		return result;
-	}
-
 	private boolean isName(String column) {
 		return configuration.getNameAttribute().equals(column);
-	}
-
-	private List<Object> updateObject(Operation operation, Map<String, String> data, Set<Attribute> attributes) {
-		Object[] result = new Object[header.size()];
-
-		// prefill actual data
-		for (String column : header.keySet()) {
-			result[header.get(column).getIndex()] = data.get(column);
-		}
-
-		// update data based on attributes parameter
-		switch (operation) {
-			case UPDATE:
-				for (Attribute attribute : attributes) {
-					Integer index;
-
-					String name = attribute.getName();
-					if (name.equals(Uid.NAME)) {
-						index = header.get(configuration.getUniqueAttribute()).getIndex();
-					} else if (name.equals(Name.NAME)) {
-						index = header.get(configuration.getNameAttribute()).getIndex();
-					} else if (name.equals(OperationalAttributes.PASSWORD_NAME)) {
-						index = header.get(configuration.getPasswordAttribute()).getIndex();
-					} else {
-						index = header.get(name).getIndex();
-					}
-
-					String value = Util.createRawValue(attribute, configuration);
-					result[index] = value;
-				}
-				break;
-			case ADD_ATTR_VALUE:
-			case REMOVE_ATTR_VALUE:
-				for (Attribute attribute : attributes) {
-					Class type = String.class;
-					Integer index;
-
-					String name = attribute.getName();
-					if (name.equals(Uid.NAME)) {
-						index = header.get(configuration.getUniqueAttribute()).getIndex();
-					} else if (name.equals(Name.NAME)) {
-						index = header.get(configuration.getNameAttribute()).getIndex();
-					} else if (name.equals(OperationalAttributes.PASSWORD_NAME)) {
-						index = header.get(configuration.getPasswordAttribute()).getIndex();
-						type = GuardedString.class;
-					} else {
-						index = header.get(name).getIndex();
-					}
-
-					List<Object> current = Util.createAttributeValues((String) result[index], type, configuration);
-					List<Object> updated = Operation.ADD_ATTR_VALUE.equals(operation) ?
-							Util.addValues(current, attribute.getValue()) :
-							Util.removeValues(current, attribute.getValue());
-
-					if (isUid(name) && updated.size() != 1) {
-						throw new IllegalArgumentException("Unique attribute '" + name + "' must contain single value");
-					}
-
-					String value = Util.createRawValue(updated, configuration);
-					result[index] = value;
-				}
-		}
-
-		return Arrays.asList(result);
 	}
 }

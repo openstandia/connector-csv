@@ -58,6 +58,13 @@ public class CsvConfiguration extends AbstractConfiguration {
     }
 
     @ConfigurationProperty(
+            displayMessageKey = "UI_CSV_EVENT_TYPE_ATTRIBUTE",
+            helpMessageKey = "UI_CSV_EVENT_TYPE_ATTRIBUTE_HELP")
+    public String getEventTypeAttribute() {
+        return config.getEventTypeAttribute();
+    }
+
+    @ConfigurationProperty(
             displayMessageKey = "UI_CSV_ENCODING",
             helpMessageKey = "UI_CSV_ENCODING_HELP")
     public String getEncoding() {
@@ -235,6 +242,10 @@ public class CsvConfiguration extends AbstractConfiguration {
 
     public void setPasswordAttribute(String passwordAttribute) {
         config.setPasswordAttribute(passwordAttribute);
+    }
+
+    public void setEventTypeAttribute(String eventTypeAttribute) {
+        config.setEventTypeAttribute(eventTypeAttribute);
     }
 
     public void setPreserveOldSyncFiles(int preserverOldSyncFiles) {
