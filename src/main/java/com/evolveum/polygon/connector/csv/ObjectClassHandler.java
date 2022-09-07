@@ -320,19 +320,19 @@ public class ObjectClassHandler implements TestOp, SyncOp {
 
 		File oldCsv = findOldCsv(token, newToken, handler);
 		if (oldCsv == null) {
-			LOG.error("Couldn't find old csv file to create diff, finishing synchronization.");
-			return;
-		}
+			LOG.warn("Couldn't find old csv file to create diff, continue synchronization.");
+		} else {
+			String oldDigest = calcDigest(oldCsv);
+			String newDigest = calcDigest(newCsv);
 
-		String oldDigest = calcDigest(oldCsv);
-		String newDigest = calcDigest(newCsv);
+			LOG.ok("Comparing files. Old {0} (exists: {1}, size: {2}, digest: {3}) with new {4} (exists: {5}, size: {6}, digest: {7})",
+					oldCsv.getName(), oldCsv.exists(), oldCsv.length(), oldDigest, newCsv.getName(), newCsv.exists(), newCsv.length(), newDigest);
 
-		LOG.ok("Comparing files. Old {0} (exists: {1}, size: {2}, digest: {3}) with new {4} (exists: {5}, size: {6}, digest: {7})",
-				oldCsv.getName(), oldCsv.exists(), oldCsv.length(), oldDigest, newCsv.getName(), newCsv.exists(), newCsv.length(), newDigest);
-
-		if (oldDigest.equals(newDigest)) {
-			// no changes
-			return;
+			if (oldDigest.equals(newDigest)) {
+				// no changes
+				LOG.ok("No changes, finishing synchronization.");
+				return;
+			}
 		}
 
 		try (Reader reader = Util.createReader(newCsv, configuration)) {
