@@ -39,7 +39,7 @@ public class ObjectClassHandlerConfiguration {
     private String uniqueAttribute;
     private String nameAttribute;
     private String passwordAttribute;
-    private String eventTypeAttribute;
+    private boolean groupByEnabled;
 
     private String multivalueDelimiter;
 
@@ -81,7 +81,7 @@ public class ObjectClassHandlerConfiguration {
         setUniqueAttribute(Util.getSafeValue(values, "uniqueAttribute", null));
         setNameAttribute(Util.getSafeValue(values, "nameAttribute", null));
         setPasswordAttribute(Util.getSafeValue(values, "passwordAttribute", null));
-        setEventTypeAttribute(Util.getSafeValue(values, "eventTypeAttribute", null));
+        setGroupByEnabled(Util.getSafeValue(values, "groupByEnabled", false, Boolean.class));
         setMultivalueAttributes(Util.getSafeValue(values, "multivalueAttributes", null));
 
         setMultivalueDelimiter(Util.getSafeValue(values, "multivalueDelimiter", null));
@@ -286,12 +286,12 @@ public class ObjectClassHandlerConfiguration {
         this.passwordAttribute = passwordAttribute;
     }
 
-    public String getEventTypeAttribute() {
-        return eventTypeAttribute;
+    public boolean isGroupByEnabled() {
+        return groupByEnabled;
     }
 
-    public void setEventTypeAttribute(String eventTypeAttribute) {
-        this.eventTypeAttribute = eventTypeAttribute;
+    public void setGroupByEnabled(boolean groupByEnabled) {
+        this.groupByEnabled = groupByEnabled;
     }
 
     public String getMultivalueDelimiter() {

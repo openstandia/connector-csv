@@ -2,6 +2,7 @@ package com.evolveum.polygon.connector.csv;
 
 import com.evolveum.polygon.connector.csv.util.Column;
 import com.evolveum.polygon.connector.csv.util.Util;
+import com.google.gson.Gson;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
@@ -9,12 +10,18 @@ import org.apache.commons.csv.CSVRecord;
 import org.identityconnectors.common.StringUtil;
 import org.identityconnectors.common.logging.Log;
 import org.identityconnectors.common.security.GuardedString;
-import org.identityconnectors.framework.common.exceptions.*;
+import org.identityconnectors.framework.common.exceptions.ConfigurationException;
+import org.identityconnectors.framework.common.exceptions.ConnectorException;
+import org.identityconnectors.framework.common.exceptions.ConnectorIOException;
 import org.identityconnectors.framework.common.objects.*;
 import org.identityconnectors.framework.spi.SyncTokenResultsHandler;
-import org.identityconnectors.framework.spi.operations.*;
+import org.identityconnectors.framework.spi.operations.SyncOp;
+import org.identityconnectors.framework.spi.operations.TestOp;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.Reader;
 import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
@@ -31,6 +38,7 @@ import static com.evolveum.polygon.connector.csv.util.Util.handleGenericExceptio
 public class ObjectClassHandler implements TestOp, SyncOp {
 
 	private static final Log LOG = Log.getLog(ObjectClassHandler.class);
+	private static final String ATTR_RAW_JSON = "rawJson";
 
 	private ObjectClassHandlerConfiguration configuration;
 
@@ -232,6 +240,15 @@ public class ObjectClassHandler implements TestOp, SyncOp {
 			infos.add(builder.build());
 		}
 
+		if (configuration.isGroupByEnabled()) {
+			AttributeInfoBuilder builder = new AttributeInfoBuilder(ATTR_RAW_JSON);
+			builder.setType(String.class);
+			builder.setNativeName(ATTR_RAW_JSON);
+			builder.setSubtype(AttributeInfo.Subtypes.STRING_JSON);
+
+			infos.add(builder.build());
+		}
+
 		return infos;
 	}
 
@@ -341,31 +358,11 @@ public class ObjectClassHandler implements TestOp, SyncOp {
 			CSVParser parser = csv.parse(reader);
 			Iterator<CSVRecord> iterator = parser.iterator();
 
-			int changesCount = 0;
-
-			boolean shouldContinue = true;
-			while (iterator.hasNext()) {
-				CSVRecord record = iterator.next();
-				if (skipRecord(record)) {
-					continue;
-				}
-
-				String uid = record.get(uidIndex);
-				if (StringUtil.isEmpty(uid)) {
-					throw new ConnectorException("Unique attribute not defined for record number "
-							+ record.getRecordNumber() + " in " + newCsv.getName());
-				}
-
-				SyncDelta delta = doSyncCreateOrUpdate(record, uid, newSyncToken, handler);
-				if (delta == null) {
-					continue;
-				}
-
-				changesCount++;
-				shouldContinue = handler.handle(delta);
-				if (!shouldContinue) {
-					break;
-				}
+			int changesCount;
+			if (configuration.isGroupByEnabled()) {
+				changesCount = doSyncInternalWithGroupBy(handler, iterator, uidIndex, newSyncToken, newCsv.getName());
+			} else {
+				changesCount = doSyncInternal(handler, iterator, uidIndex, newSyncToken, newCsv.getName());
 			}
 
 			if (changesCount == 0) {
@@ -376,6 +373,93 @@ public class ObjectClassHandler implements TestOp, SyncOp {
 		} finally {
 			cleanupOldSyncFiles();
 		}
+	}
+
+	private int doSyncInternal(SyncResultsHandler handler, Iterator<CSVRecord> iterator, Integer uidIndex, SyncToken newSyncToken, String csvName) {
+		int changesCount = 0;
+
+		boolean shouldContinue = true;
+		while (iterator.hasNext()) {
+			CSVRecord record = iterator.next();
+			if (skipRecord(record)) {
+				continue;
+			}
+
+			String uid = record.get(uidIndex);
+			if (StringUtil.isEmpty(uid)) {
+				throw new ConnectorException("Unique attribute not defined for record number "
+						+ record.getRecordNumber() + " in " + csvName);
+			}
+
+			SyncDelta delta = doSyncCreateOrUpdate(record, uid, newSyncToken, handler);
+			if (delta == null) {
+				continue;
+			}
+
+			changesCount++;
+			shouldContinue = handler.handle(delta);
+			if (!shouldContinue) {
+				break;
+			}
+		}
+
+		return changesCount;
+	}
+
+	private int doSyncInternalWithGroupBy(SyncResultsHandler handler, Iterator<CSVRecord> iterator, Integer uidIndex, SyncToken newSyncToken, String csvName) {
+		int changesCount = 0;
+
+		boolean shouldContinue = true;
+		List<CSVRecord> recordGroup = new ArrayList<>();
+
+		while (iterator.hasNext()) {
+			CSVRecord record = iterator.next();
+			if (skipRecord(record)) {
+				continue;
+			}
+
+			String uid = record.get(uidIndex);
+			if (StringUtil.isEmpty(uid)) {
+				throw new ConnectorException("Unique attribute not defined for record number "
+						+ record.getRecordNumber() + " in " + csvName);
+			}
+
+			// Record group is empty, so push it then check next record
+			if (recordGroup.isEmpty()) {
+				recordGroup.add(record);
+				continue;
+			}
+
+			// If the current record has same uid with the current record group, push it then check next record
+			String currentUid = recordGroup.get(0).get(uidIndex);
+			// TODO: Support case-insensitive case?
+			if (uid.equals(currentUid)) {
+				recordGroup.add(record);
+				continue;
+			}
+
+			// Detected different uid record, create delta
+			SyncDelta delta = doSyncCreateOrUpdate(recordGroup, newSyncToken);
+
+			// Reset record group for next
+			recordGroup.clear();
+			recordGroup.add(record);
+
+			changesCount++;
+			shouldContinue = handler.handle(delta);
+			if (!shouldContinue) {
+				break;
+			}
+		}
+
+		// Handle remains
+		if (shouldContinue && !recordGroup.isEmpty()) {
+			SyncDelta delta = doSyncCreateOrUpdate(recordGroup, newSyncToken);
+			changesCount++;
+			handler.handle(delta);
+		}
+
+		return changesCount;
 	}
 
 	private void cleanupOldSyncFiles() {
@@ -403,15 +487,61 @@ public class ObjectClassHandler implements TestOp, SyncOp {
 	private SyncDelta doSyncCreateOrUpdate(CSVRecord newRecord, String newRecordUid, SyncToken newSyncToken, SyncResultsHandler handler) {
 		SyncDelta delta;
 
-		// TODO Implement eventType handling here?
-//		String eventType = newRecord.get(configuration.getEventTypeAttribute());
-//		if (eventType == null) {
-//			// Invalid record, skip
-//			return null;
-//		}
-
 		// TODO Need to distinguish create or update?
 		delta = buildSyncDelta(SyncDeltaType.CREATE_OR_UPDATE, newSyncToken, newRecord);
+
+		LOG.ok("Created delta {0}", delta);
+
+		return delta;
+	}
+
+	private SyncDelta doSyncCreateOrUpdate(List<CSVRecord> recordGroup, SyncToken newSyncToken) {
+		SyncDeltaBuilder builder = new SyncDeltaBuilder();
+		builder.setDeltaType(SyncDeltaType.CREATE_OR_UPDATE);
+		builder.setObjectClass(ObjectClass.ACCOUNT);
+		builder.setToken(newSyncToken);
+
+		Map<Integer, String> header = reverseHeaderMap();
+
+		// Create base connectorObject using first record
+		ConnectorObjectBuilder connectorObjectBuilder = createConnectorObjectBuilder(recordGroup.get(0));
+
+		// Then, create rawJson and append to the connectorObject
+		List<Map<String, String>> data = new ArrayList<>();
+		for (CSVRecord record : recordGroup) {
+			if (header.size() != record.size()) {
+				throw new ConnectorException("Number of columns in header (" + header.size()
+						+ ") doesn't match number of columns for record (" + record.size()
+						+ "). File row number: " + record.getRecordNumber());
+			}
+
+			Map<String, String> recordMap = new HashMap<>();
+
+			for (int i = 0; i < record.size(); i++) {
+				String name = header.get(i);
+				String value = record.get(i);
+
+				if (StringUtil.isEmpty(value)) {
+					// Include empty string for JSON if no value
+					recordMap.put(name, "");
+				} else {
+					recordMap.put(name, value);
+				}
+			}
+
+			if (!recordMap.isEmpty()) {
+				data.add(recordMap);
+			}
+		}
+		if (!data.isEmpty()) {
+			String json = new Gson().toJson(data);
+			connectorObjectBuilder.addAttribute(ATTR_RAW_JSON, json);
+		}
+
+		ConnectorObject connectorObject = connectorObjectBuilder.build();
+		builder.setObject(connectorObject);
+
+		SyncDelta delta = builder.build();
 
 		LOG.ok("Created delta {0}", delta);
 
@@ -505,6 +635,10 @@ public class ObjectClassHandler implements TestOp, SyncOp {
 	}
 
 	private ConnectorObject createConnectorObject(CSVRecord record) {
+		return createConnectorObjectBuilder(record).build();
+	}
+
+	private ConnectorObjectBuilder createConnectorObjectBuilder(CSVRecord record) {
 		ConnectorObjectBuilder builder = new ConnectorObjectBuilder();
 
 		Map<Integer, String> header = reverseHeaderMap();
@@ -544,7 +678,7 @@ public class ObjectClassHandler implements TestOp, SyncOp {
 			builder.addAttribute(name, createAttributeValues(value));
 		}
 
-		return builder.build();
+		return builder;
 	}
 
 	private boolean isUniqueAndNameAttributeEqual() {
