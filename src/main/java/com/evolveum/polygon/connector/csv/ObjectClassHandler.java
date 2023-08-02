@@ -430,8 +430,9 @@ public class ObjectClassHandler implements TestOp, SyncOp {
 				continue;
 			}
 
-			// Next record is same uid with the current record group, so push it then check next record
+			// If the current record has same uid with the current record group, push it then check next record
 			String currentUid = recordGroup.get(0).get(uidIndex);
+			// TODO: Support case-insensitive case?
 			if (uid.equals(currentUid)) {
 				recordGroup.add(record);
 				continue;
