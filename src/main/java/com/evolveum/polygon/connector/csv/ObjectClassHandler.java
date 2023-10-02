@@ -25,6 +25,7 @@ import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.*;
+import java.util.stream.Collectors;
 
 import static com.evolveum.polygon.connector.csv.util.Util.createSyncFileName;
 import static com.evolveum.polygon.connector.csv.util.Util.handleGenericException;
@@ -206,11 +207,12 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 				// unique column
 				AttributeInfoBuilder builder = new AttributeInfoBuilder(Uid.NAME);
 				builder.setType(String.class);
-				builder.setNativeName(name);
+				builder.setNativeName(resolveUniqueAttributeName(name));
 
 				infos.add(builder.build());
 
-				if (!isUniqueAndNameAttributeEqual()) {
+				// When using composite unique attributes, we need to define additional schema for the original unique attribute
+				if (!isUniqueAndNameAttributeEqual() || isCompositeUniqueAttributeMode()) {
 					builder = new AttributeInfoBuilder(name);
 					builder.setType(String.class);
 					builder.setNativeName(name);
@@ -228,6 +230,7 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 				builder.setNativeName(name);
 
 				if (isUniqueAndNameAttributeEqual()) {
+					builder.setNativeName(resolveUniqueAttributeName(name));
 					builder.setRequired(true);
 				}
 
@@ -394,7 +397,20 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 			throw new InvalidAttributeValueException("Unique attribute value not defined");
 		}
 
-		return uid.toString();
+		if (!isCompositeUniqueAttributeMode()) {
+			return uid.toString();
+		}
+
+		StringBuilder sb = new StringBuilder(uid.toString());
+
+		for (String additionalAttr : configuration.getAdditionalCompositeUniqueAttributes()) {
+			Attribute attr = AttributeUtil.find(additionalAttr, attributes);
+			String value = attr != null ? AttributeUtil.getStringValue(attr) : "";
+			sb.append(configuration.geCompositeUniqueAttributeDelimiter());
+			sb.append(value);
+		}
+
+		return sb.toString();
 	}
 
 	@Override
@@ -466,6 +482,36 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 		} catch (Exception ex) {
 			handleGenericException(ex, "Error during query execution");
 		}
+	}
+
+	private boolean isCompositeUniqueAttributeMode() {
+		return configuration.getAdditionalCompositeUniqueAttributes().length > 0;
+	}
+
+	private String resolveUid(String uid, CSVRecord record) {
+		if (!isCompositeUniqueAttributeMode()) {
+			return uid;
+		}
+
+		Map<String, Column> header = getHeader();
+		String delimiter = configuration.geCompositeUniqueAttributeDelimiter();
+
+		String compositeAttributes = Arrays.stream(configuration.getAdditionalCompositeUniqueAttributes())
+				.filter(header::containsKey)
+				.map(header::get)
+				.map(Column::getIndex)
+				.map(record::get)
+				.collect(Collectors.joining(delimiter));
+		return uid + delimiter + compositeAttributes;
+	}
+
+	private String resolveUniqueAttributeName(String name) {
+		if (!isCompositeUniqueAttributeMode()) {
+			return name;
+		}
+
+		String delimiter = configuration.geCompositeUniqueAttributeDelimiter();
+		return name + delimiter + String.join(delimiter, configuration.getAdditionalCompositeUniqueAttributes());
 	}
 
 	private String extractUidFromFilter(Filter filter) {
@@ -954,6 +1000,12 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 			}
 
 			if (name.equals(configuration.getUniqueAttribute())) {
+				if (isCompositeUniqueAttributeMode()) {
+					// Add original attribute before resolving as composite attributes
+					builder.addAttribute(name, value);
+					value = resolveUid(value, record);
+				}
+
 				builder.setUid(value);
 
 				if (!isUniqueAndNameAttributeEqual()) {
@@ -1046,7 +1098,8 @@ public class ObjectClassHandler implements CreateOp, DeleteOp, TestOp, SearchOp<
 					if (StringUtil.isEmpty(recordUidValue)) {
 						continue;
 					}
-				
+					recordUidValue = resolveUid(recordUidValue, record);
+
 					if (!uidMatches(uid.getUidValue(), recordUidValue, configuration.isIgnoreIdentifierCase())) {
 						printer.printRecord(record);
 						continue;

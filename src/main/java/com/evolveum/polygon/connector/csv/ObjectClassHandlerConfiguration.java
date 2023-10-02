@@ -55,6 +55,9 @@ public class ObjectClassHandlerConfiguration {
     private boolean container = false;
     private boolean auxiliary = false;
 
+    private String[] additionalCompositeUniqueAttributes;
+    private String compositeUniqueAttributeDelimiter;
+
     public ObjectClassHandlerConfiguration() {
         this(ObjectClass.ACCOUNT, null);
     }
@@ -92,6 +95,9 @@ public class ObjectClassHandlerConfiguration {
 
         setContainer(Util.getSafeValue(values, "container", false, Boolean.class));
         setAuxiliary(Util.getSafeValue(values, "auxiliary", false, Boolean.class));
+
+        setAdditionalCompositeUniqueAttributes(Util.getSafeValue(values, "additionalCompositeUniqueAttributes", new String[]{}, String[].class));
+        setCompositeUniqueAttributeDelimiter(Util.getSafeValue(values, "compositeUniqueAttributeDelimiter", "."));
     }
 
     public void recompute() {
@@ -266,6 +272,22 @@ public class ObjectClassHandlerConfiguration {
         if (this.nameAttribute == null) {
             this.nameAttribute = uniqueAttribute;
         }
+    }
+
+    public String[] getAdditionalCompositeUniqueAttributes() {
+        return additionalCompositeUniqueAttributes;
+    }
+
+    public void setAdditionalCompositeUniqueAttributes(String[] additionalCompositeUniqueAttributes) {
+        this.additionalCompositeUniqueAttributes = additionalCompositeUniqueAttributes;
+    }
+
+    public String geCompositeUniqueAttributeDelimiter() {
+        return compositeUniqueAttributeDelimiter;
+    }
+
+    public void setCompositeUniqueAttributeDelimiter(String compositeUniqueAttributeDelimiter) {
+        this.compositeUniqueAttributeDelimiter = compositeUniqueAttributeDelimiter;
     }
 
     public String getNameAttribute() {

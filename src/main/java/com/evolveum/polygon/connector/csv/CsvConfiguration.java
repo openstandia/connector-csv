@@ -37,6 +37,20 @@ public class CsvConfiguration extends AbstractConfiguration {
     }
 
     @ConfigurationProperty(
+            displayMessageKey = "UI_CSV_ADDITIONAL_COMPOSITE_UNIQUE_ATTRIBUTES",
+            helpMessageKey = "UI_CSV_ADDITIONAL_COMPOSITE_UNIQUE_ATTRIBUTES_HELP")
+    public String[] getAdditionalCompositeUniqueAttributes() {
+        return config.getAdditionalCompositeUniqueAttributes();
+    }
+
+    @ConfigurationProperty(
+            displayMessageKey = "UI_CSV_COMPOSITE_UNIQUE_ATTRIBUTE_DELIMITER",
+            helpMessageKey = "UI_CSV_COMPOSITE_UNIQUE_ATTRIBUTE_DELIMITER_HELP")
+    public String getCompositeUniqueAttributeDelimiter() {
+        return config.geCompositeUniqueAttributeDelimiter();
+    }
+
+    @ConfigurationProperty(
             displayMessageKey = "UI_CSV_NAME_ATTRIBUTE",
             helpMessageKey = "UI_CSV_NAME_ATTRIBUTE_HELP")
     public String getNameAttribute() {
@@ -243,6 +257,14 @@ public class CsvConfiguration extends AbstractConfiguration {
 
     public void setUniqueAttribute(String uniqueAttribute) {
         config.setUniqueAttribute(uniqueAttribute);
+    }
+
+    public void setAdditionalCompositeUniqueAttributes(String[] additionalCompositeUniqueAttributes) {
+        config.setAdditionalCompositeUniqueAttributes(additionalCompositeUniqueAttributes);
+    }
+
+    public void setCompositeUniqueAttributeDelimiter(String compositeUniqueAttributeDelimiter) {
+        config.setCompositeUniqueAttributeDelimiter(compositeUniqueAttributeDelimiter);
     }
 
     public void setNameAttribute(String nameAttribute) {
